@@ -17,43 +17,49 @@ router.post('/book-item/:sale_id', async (req,res)=>{
 
   res.status(200).json({message: 'Your request is being processed. Please wait for confirmation.'})
 })
-// router.post('/book-item/:sale_id', async (req, res) => {
-//   const sale_id = req.params.sale_id;
-//   const user_authentication_token = req.headers['authorization'].split(' ')[1];
 
-//   try {
-//     // Check the current inventory
-//     const remainingInventory = await client.decr('inventory:iphone:count');
 
-//     if (remainingInventory < 0) {
-//       // Revert the decrement if inventory is exhausted
-//       await client.incr('inventory:iphone:count');
-//       // Add to virtual queue
-//       await client.lpush('virtual_queue', JSON.stringify({
-//         sale_id,
-//         user_authentication_token,
-//         timestamp: new Date()
-//       }));
-//       return res.status(404).json({ message: 'No items available for booking. You are in the waiting list.' });
-//     }
+router.put('/booking-service/book-item/:sale_id/:booking_id', async (req, res) => {
+  const { sale_id, booking_id } = req.params;
 
-//     // Process the booking
-//     const booking = new Booking({
-//       status: 'hold',
-//       userInfo: { user_authentication_token },
-//       booking_info: { item_id: sale_id },
-//       orderTimestamp: new Date()
-//     });
-//     await booking.save();
+  const booking = await Booking.findById(booking_id);
 
-//     // Add to hold queue
-//     await client.lpush('hold_queue', JSON.stringify(booking));
-    
-//     return res.status(200).json({ message: 'Item booked successfully, complete the transaction to confirm.' });
-//   } catch (error) {
-//     return res.status(500).json({ message: 'Booking failed', error: error.message });
-//   }
-// });
+  if (!booking || booking.status !== 'hold') {
+    return res.status(400).json({ error: 'Booking not found or not eligible for confirmation' });
+  }
+
+  booking.status = 'booked';
+  booking.updatedtime = new Date();
+  await booking.save();
+
+  // Remove the user from the Redis active_users set
+  await redisClient.srem('active_users', booking.userInfo.user_authentication_token);
+
+  res.json({ message: 'Booking confirmed successfully', booking });
+});
+
+
+router.delete('/booking-service/book-item/:sale_id/:booking_id', async (req, res) => {
+  const { sale_id, booking_id } = req.params;
+
+  const booking = await Booking.findById(booking_id);
+
+  if (!booking || booking.status !== 'hold') {
+    return res.status(400).json({ error: 'Booking not found or not eligible for cancellation' });
+  }
+
+  booking.status = 'deleted';
+  booking.updatedtime = new Date();
+  await booking.save();
+
+  // Return the item to the queue
+  await redisClient.lpush('inventory_queue', booking.booking_info.item_id);
+
+  // Remove the user from the Redis active_users set
+  await redisClient.srem('active_users', booking.userInfo.user_authentication_token);
+
+  res.json({ message: 'Booking cancelled successfully', booking });
+});
 
 
 
